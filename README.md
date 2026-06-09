@@ -1,17 +1,32 @@
 # CUNY Class Checker
 
-A Python script that monitors CUNY Global Class Search for open seats in a specific course and alerts you with a Windows popup when a spot opens up.
+A Python script that monitors CUNY Global Class Search for open seats in a specific course and alerts you when a spot opens up — via Discord notification (cloud mode) or Windows popup (local mode).
 
 ## How It Works
 
-The script uses Selenium to periodically scrape [CUNY Global Class Search](https://globalsearch.cuny.edu/) and checks the enrollment status of your target course. When a section changes from Closed to Open, you get a Windows MessageBox popup.
+The script uses Selenium to periodically scrape [CUNY Global Class Search](https://globalsearch.cuny.edu/) and checks the enrollment status of your target course. When a section is Open, you get notified.
 
-- Checks every ~3 minutes with random jitter to avoid detection
-- Runs silently in the background (`.pyw` version) or in a terminal (`.py` version)
+- **Cloud mode (recommended):** GitHub Actions runs a check every ~5–15 minutes on GitHub's servers and pings a Discord webhook when a seat opens. Your computer can be off.
+- **Local mode:** loops every ~3 minutes with random jitter and shows a Windows MessageBox popup.
 - Logs each check result to `class_checker.log`
 - Uses the status image filename (`status_open.gif` / `status_closed.gif`) instead of the alt text, since CUNY's alt tags are unreliable
 
-## Requirements
+## Running in the Cloud (GitHub Actions + Discord)
+
+The workflow in `.github/workflows/class-check.yml` runs `python Main.py --once` on a schedule. One-time setup:
+
+1. **Create a Discord webhook:** in any Discord server you control → Server Settings → Integrations → Webhooks → New Webhook → pick the channel → Copy Webhook URL. (Keep the URL secret — anyone with it can post to your channel.)
+2. **Add it as a repo secret:** GitHub repo → Settings → Secrets and variables → Actions → New repository secret. Name: `DISCORD_WEBHOOK_URL`, value: the webhook URL.
+3. **Test it:** Actions tab → Class Checker → Run workflow → check "send a test Discord ping" → Run. You should get a test message in Discord plus a real check.
+4. In Discord, set that channel's notification setting to **All Messages** so webhook pings buzz your phone (webhooks can't use @mentions reliably).
+
+Notes:
+
+- GitHub's cron is best-effort: checks land every ~5–15 minutes, not exactly every 5.
+- GitHub auto-disables scheduled workflows after 60 days with no repo activity — push any commit (or click "Enable" in the Actions tab) to keep it alive.
+- Each run's result also appears in the workflow run summary in the Actions tab.
+
+## Requirements (local mode)
 
 - Python 3.10+
 - Google Chrome
@@ -20,7 +35,7 @@ The script uses Selenium to periodically scrape [CUNY Global Class Search](https
 ## Setup
 
 ```bash
-pip install selenium webdriver-manager
+pip install -r requirements.txt
 ```
 
 ## Configuration
@@ -70,6 +85,14 @@ python Main.py
 ```
 
 Stop with `Ctrl+C`.
+
+### Single check (what the cloud runs)
+
+```bash
+python Main.py --once
+```
+
+Runs one check and exits (exit code 1 if the scrape failed or the course wasn't found). Set the `DISCORD_WEBHOOK_URL` environment variable to also get a Discord ping; add `--test-notify` to send a test ping first.
 
 ## Log Output
 

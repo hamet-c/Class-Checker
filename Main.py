@@ -1,11 +1,13 @@
+import json
+import os
 import time
 import random
 import sys
 import logging
+import urllib.request
 from datetime import datetime
 
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
@@ -15,8 +17,6 @@ from selenium.common.exceptions import (
     NoSuchElementException,
     WebDriverException,
 )
-from webdriver_manager.chrome import ChromeDriverManager
-import ctypes
 
 # ============================================================
 # USER CONFIGURATION - Edit these values
@@ -57,20 +57,25 @@ HEADLESS = True
 # Max check cycles (0 = unlimited, runs until Ctrl+C).
 MAX_CHECKS = 0
 
+# Discord notifications: set the DISCORD_WEBHOOK_URL environment variable.
+# Never hardcode the webhook URL here -- this repo is public.
+# In GitHub Actions it is injected from the DISCORD_WEBHOOK_URL repo secret.
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+
 # ============================================================
 # END OF USER CONFIGURATION
 # ============================================================
 
 SEARCH_URL = "https://globalsearch.cuny.edu/CFGlobalSearchTool/search.jsp"
 
+_log_handlers = [logging.FileHandler("class_checker.log", encoding="utf-8")]
+if sys.stdout is not None:  # sys.stdout is None under pythonw
+    _log_handlers.insert(0, logging.StreamHandler(sys.stdout))
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("class_checker.log", encoding="utf-8"),
-    ],
+    handlers=_log_handlers,
 )
 log = logging.getLogger("ClassChecker")
 
@@ -94,8 +99,9 @@ def create_driver():
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
 
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=opts)
+    # Selenium Manager (built into Selenium 4.6+) resolves the right
+    # chromedriver automatically, locally and on CI runners.
+    driver = webdriver.Chrome(options=opts)
     driver.implicitly_wait(10)
     driver.execute_cdp_cmd(
         "Page.addScriptToEvaluateOnNewDocument",
@@ -307,31 +313,135 @@ def parse_results(driver):
     return result
 
 
+def notify_discord(message):
+    """Post a message to the Discord webhook. Returns True on success."""
+    if not DISCORD_WEBHOOK_URL:
+        return False
+    payload = json.dumps({"content": message[:1900]}).encode("utf-8")
+    req = urllib.request.Request(
+        DISCORD_WEBHOOK_URL,
+        data=payload,
+        headers={"Content-Type": "application/json", "User-Agent": "cuny-class-checker"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            log.info(f"Discord notification sent (HTTP {resp.status})")
+        return True
+    except Exception as e:
+        log.error(f"Discord notification failed: {e}")
+        return False
+
+
+def write_step_summary(text):
+    """Append a line to the GitHub Actions run summary, if running there."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(text + "\n\n")
+    except Exception:
+        pass
+
+
 def notify_user(details):
     log.info("=" * 60)
     log.info("SEAT AVAILABLE! " + details)
     log.info("=" * 60)
-    try:
-        ctypes.windll.user32.MessageBoxW(
-            0, details[:1024], "CUNY Class Seat Available!", 0x40
-        )
-    except Exception as e:
-        log.warning(f"Desktop notification failed: {e}")
+    notify_discord(
+        ":rotating_light: **CUNY seat available!** :rotating_light:\n"
+        f"**{SUBJECT} {COURSE_NUMBER}** at {COLLEGE} ({TERM})\n"
+        f"{details}\n"
+        f"Enroll now: https://home.cunyfirst.cuny.edu/\n"
+        f"Verify: {SEARCH_URL}"
+    )
+    if sys.platform == "win32" and not os.environ.get("CI"):
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(
+                0, details[:1024], "CUNY Class Seat Available!", 0x40
+            )
+        except Exception as e:
+            log.warning(f"Desktop notification failed: {e}")
 
 
-def main():
+def log_config():
     log.info("CUNY Class Checker starting")
     log.info(f"  College:  {COLLEGE} ({COLLEGE_CODE})")
     log.info(f"  Term:     {TERM}")
     log.info(f"  Subject:  {SUBJECT}")
     log.info(f"  Career:   {COURSE_CAREER or '(any)'}")
     log.info(f"  Course:   {COURSE_NUMBER or '(not set — will list courses)'}")
+    log.info(f"  Discord:  {'configured' if DISCORD_WEBHOOK_URL else 'not configured'}")
+
+
+def run_single_check():
+    """One full scrape cycle. Returns the parse result dict, or None on error."""
+    driver = None
+    try:
+        driver = create_driver()
+        navigate_and_search(driver)
+        return parse_results(driver)
+    except TimeoutException:
+        log.warning("Page load timed out.")
+        return None
+    except WebDriverException as e:
+        log.error(f"Browser error: {e}")
+        return None
+    except Exception as e:
+        log.error(f"Unexpected error: {e}", exc_info=True)
+        return None
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+
+def main_once():
+    """Single check, for scheduled runs (GitHub Actions cron).
+
+    Exit 0 when the check completed (seats open or not); exit 1 when the
+    scrape failed or the course was missing, so the workflow run shows red.
+    """
+    log_config()
+
+    if os.environ.get("TEST_NOTIFY", "").lower() == "true" or "--test-notify" in sys.argv:
+        ok = notify_discord(
+            ":white_check_mark: Test ping — the class checker can reach Discord.\n"
+            f"Watching **{SUBJECT} {COURSE_NUMBER}** at {COLLEGE} ({TERM})."
+        )
+        if not ok:
+            log.error("Test notification failed. Is the DISCORD_WEBHOOK_URL secret set?")
+            write_step_summary(":x: Test notification failed — check the `DISCORD_WEBHOOK_URL` secret.")
+            sys.exit(1)
+
+    result = run_single_check()
+
+    if result is None:
+        write_step_summary(":warning: Check failed — page did not load or scrape errored.")
+        sys.exit(1)
+    if not result["found"]:
+        log.error(f"Course not found: {result['details']}")
+        write_step_summary(f":warning: {result['details']} — term/course config may be stale.")
+        sys.exit(1)
+
+    if result["seats_available"]:
+        notify_user(result["details"])
+        write_step_summary(f":rotating_light: **OPEN** — {result['details']}")
+    else:
+        log.info(f"No seats: {result['details']}")
+        write_step_summary(f"Closed — {result['details']}")
+
+
+def main():
+    log_config()
     log.info(f"  Interval: {CHECK_INTERVAL_SECONDS}s +/- {JITTER_SECONDS}s jitter")
     log.info(f"  Headless: {HEADLESS}")
 
     check_count = 0
-    driver = None
-
     try:
         while True:
             check_count += 1
@@ -340,32 +450,16 @@ def main():
                 break
 
             log.info(f"--- Check #{check_count} at {datetime.now().strftime('%H:%M:%S')} ---")
+            result = run_single_check()
 
-            try:
-                driver = create_driver()
-                navigate_and_search(driver)
-                result = parse_results(driver)
-
-                if not result["found"]:
-                    log.info(f"Course not found: {result['details']}")
-                elif result["seats_available"]:
-                    notify_user(result["details"])
-                else:
-                    log.info(f"No seats: {result['details']}")
-
-            except TimeoutException:
-                log.warning("Page load timed out. Will retry next cycle.")
-            except WebDriverException as e:
-                log.error(f"Browser error: {e}")
-            except Exception as e:
-                log.error(f"Unexpected error: {e}", exc_info=True)
-            finally:
-                if driver:
-                    try:
-                        driver.quit()
-                    except Exception:
-                        pass
-                    driver = None
+            if result is None:
+                log.info("Check failed, will retry next cycle.")
+            elif not result["found"]:
+                log.info(f"Course not found: {result['details']}")
+            elif result["seats_available"]:
+                notify_user(result["details"])
+            else:
+                log.info(f"No seats: {result['details']}")
 
             jitter = random.uniform(-JITTER_SECONDS, JITTER_SECONDS)
             delay = max(60, CHECK_INTERVAL_SECONDS + jitter)
@@ -377,13 +471,11 @@ def main():
     except KeyboardInterrupt:
         log.info("Stopped by user (Ctrl+C).")
     finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
         log.info("Class Checker shut down.")
 
 
 if __name__ == "__main__":
-    main()
+    if "--once" in sys.argv:
+        main_once()
+    else:
+        main()
