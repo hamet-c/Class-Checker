@@ -408,6 +408,12 @@ def main_once():
     """
     log_config()
 
+    if os.environ.get("GITHUB_ACTIONS") and not DISCORD_WEBHOOK_URL:
+        log.warning("DISCORD_WEBHOOK_URL secret is not set — open seats will NOT notify you!")
+        write_step_summary(
+            ":warning: `DISCORD_WEBHOOK_URL` secret is not set — open seats will **not** notify you."
+        )
+
     if os.environ.get("TEST_NOTIFY", "").lower() == "true" or "--test-notify" in sys.argv:
         ok = notify_discord(
             ":white_check_mark: Test ping — the class checker can reach Discord.\n"
