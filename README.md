@@ -49,9 +49,12 @@ TERM = "2026 Fall Term"           # Term (must match dropdown text)
 SUBJECT = "Computer Science"      # Subject (must match dropdown text)
 COURSE_CAREER = "Undergraduate"   # "Undergraduate", "Graduate", "Doctoral", or ""
 COURSE_NUMBER = "30400"           # Course number to watch
+WATCH_CLASS_NUMBERS = ["19247", "19240"]  # Alert only for these class numbers ([] = any section)
 CHECK_INTERVAL_SECONDS = 180      # How often to check (seconds)
 JITTER_SECONDS = 30               # Random delay added/subtracted each cycle
 ```
+
+`WATCH_CLASS_NUMBERS` uses the 5-digit "Class" column from the search results, so you can target specific sections (e.g. a particular time slot or instructor) and ignore ones you don't want — like the section you're already enrolled in. Sections that aren't watched still appear in the logs, just without alerts.
 
 ### College Codes
 

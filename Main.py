@@ -45,6 +45,14 @@ COURSE_CAREER = "Undergraduate"
 # Example: "30400" will match "CSC 30400 - Software Engineering"
 COURSE_NUMBER = "30400"
 
+# Only alert for these specific class numbers (the "Class" column in results).
+# Leave empty [] to alert when ANY section of the course is open.
+# Current CSC 30400 sections:
+#   56053 = 3GH-LEC We 5:00-7:30PM   (excluded -- already enrolled in this one)
+#   19247 = D-LEC   MoWe 12:30-1:45PM (Gunby-Mann)
+#   19240 = D2-LEC  MoWe 12:30-1:45PM (Ozdemir)
+WATCH_CLASS_NUMBERS = ["19247", "19240"]
+
 # How often to check (seconds). Default: 180 = 3 minutes.
 CHECK_INTERVAL_SECONDS = 180
 
@@ -183,6 +191,7 @@ def parse_results(driver):
     result = {
         "found": False,
         "seats_available": False,
+        "watch_misconfigured": False,
         "details": "",
     }
 
@@ -265,8 +274,7 @@ def parse_results(driver):
     # (e.g. alt="Open" but src="status_closed.gif"). We use the image filename
     # as the source of truth for status.
     rows = table.find_elements(By.CSS_SELECTOR, "tbody tr")
-    statuses = []
-    section_details = []
+    sections = []
     for row in rows:
         cells = row.find_elements(By.TAG_NAME, "td")
         if len(cells) >= 8:
@@ -287,28 +295,60 @@ def parse_results(driver):
                     status = status_img[0].get_attribute("alt") or "Unknown"
             else:
                 status = "Unknown"
-            statuses.append(status)
-            section_details.append(
-                f"  Class {class_num} | {section} | {days_times} | {instructor} | {status}"
+            sections.append(
+                {
+                    "class_num": class_num,
+                    "section": section,
+                    "days_times": days_times,
+                    "instructor": instructor,
+                    "status": status,
+                }
             )
 
-    log.info(f"Section statuses: {statuses}")
-    if section_details:
+    log.info(f"Section statuses: {[s['status'] for s in sections]}")
+    if sections:
         log.info("Section details:")
-        for detail in section_details:
-            log.info(detail)
+        for s in sections:
+            log.info(
+                f"  Class {s['class_num']} | {s['section']} | {s['days_times']} "
+                f"| {s['instructor']} | {s['status']}"
+            )
 
-    # Check if any section is open
-    open_sections = [s for s in statuses if s == "Open"]
-    if open_sections:
+    # Restrict alerts to the watched class numbers, if configured
+    if WATCH_CLASS_NUMBERS:
+        watched = [s for s in sections if s["class_num"] in WATCH_CLASS_NUMBERS]
+        missing = [
+            n for n in WATCH_CLASS_NUMBERS
+            if not any(s["class_num"] == n for s in sections)
+        ]
+        if missing:
+            log.warning(f"Watched class number(s) not in results: {', '.join(missing)}")
+        if not watched:
+            result["watch_misconfigured"] = True
+            result["details"] = (
+                f"None of the watched class numbers {WATCH_CLASS_NUMBERS} appear in "
+                f"the results for course {COURSE_NUMBER} — were sections renumbered?"
+            )
+            return result
+        ignored = [s for s in sections if s["class_num"] not in WATCH_CLASS_NUMBERS]
+    else:
+        watched = sections
+        ignored = []
+
+    open_watched = [s for s in watched if s["status"] == "Open"]
+    if open_watched:
         result["seats_available"] = True
-        result["details"] = (
-            f"{len(open_sections)} of {len(statuses)} section(s) OPEN for course {COURSE_NUMBER}"
+        result["details"] = "OPEN: " + "; ".join(
+            f"Class {s['class_num']} ({s['section']}, {s['days_times']}, {s['instructor']})"
+            for s in open_watched
         )
     else:
         result["seats_available"] = False
-        status_summary = ", ".join(statuses) if statuses else "no status found"
-        result["details"] = f"All sections: {status_summary}"
+        summary = ", ".join(f"{s['class_num']} {s['status']}" for s in watched)
+        result["details"] = f"Watched sections: {summary or 'no status found'}"
+        if ignored:
+            ignored_summary = ", ".join(f"{s['class_num']} {s['status']}" for s in ignored)
+            result["details"] += f" (ignored: {ignored_summary})"
 
     return result
 
@@ -373,6 +413,7 @@ def log_config():
     log.info(f"  Subject:  {SUBJECT}")
     log.info(f"  Career:   {COURSE_CAREER or '(any)'}")
     log.info(f"  Course:   {COURSE_NUMBER or '(not set — will list courses)'}")
+    log.info(f"  Watching: {', '.join(WATCH_CLASS_NUMBERS) if WATCH_CLASS_NUMBERS else 'any section'}")
     log.info(f"  Discord:  {'configured' if DISCORD_WEBHOOK_URL else 'not configured'}")
 
 
@@ -433,6 +474,10 @@ def main_once():
         log.error(f"Course not found: {result['details']}")
         write_step_summary(f":warning: {result['details']} — term/course config may be stale.")
         sys.exit(1)
+    if result["watch_misconfigured"]:
+        log.error(result["details"])
+        write_step_summary(f":warning: {result['details']}")
+        sys.exit(1)
 
     if result["seats_available"]:
         notify_user(result["details"])
@@ -462,6 +507,8 @@ def main():
                 log.info("Check failed, will retry next cycle.")
             elif not result["found"]:
                 log.info(f"Course not found: {result['details']}")
+            elif result["watch_misconfigured"]:
+                log.warning(result["details"])
             elif result["seats_available"]:
                 notify_user(result["details"])
             else:
