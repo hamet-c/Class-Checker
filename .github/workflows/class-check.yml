@@ -1,28 +1,22 @@
 name: Class Checker
 
-# GitHub's cron proved unreliable for this repo (~1 fire per 2 hours observed,
-# vs every-5-min requested). So each run is a long loop that checks every ~3
-# minutes for 5.5 hours, and the cron merely queues the next loop: the
-# concurrency group keeps one loop running and one queued, so when a loop
-# ends, the queued one starts immediately. Even a scheduler that drops most
-# fires keeps the chain unbroken.
+# 12 quick checks per day: one single check every 2 hours. Each run does one
+# scrape and exits — no long-running loops. GitHub's cron is best-effort, so
+# some fires may land late or drop; the next one is never far behind.
 
 on:
   schedule:
-    - cron: "7,37 * * * *"
+    # Every 2 hours at :23 past the hour (off the congested :00 mark).
+    - cron: "23 */2 * * *"
   workflow_dispatch: {}
-
-concurrency:
-  group: class-check-loop
-  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  check-loop:
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -34,26 +28,18 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Check loop (~5.5 hours, every ~3 min)
+      - name: Check for open seats
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: |
-          end=$((SECONDS + 330*60))
-          fails=0
-          n=0
-          while [ $SECONDS -lt $end ]; do
-            n=$((n+1))
-            echo "=== check #$n at $(date -u +%H:%M:%S)Z ==="
-            if python Main.py --once; then
-              fails=0
-            else
-              fails=$((fails+1))
-              echo "check failed ($fails consecutive)"
-              if [ $fails -ge 5 ]; then
-                echo "5 consecutive failures — aborting so the run shows red"
-                exit 1
-              fi
-            fi
-            sleep $((160 + RANDOM % 60))
-          done
-          echo "Loop window finished after $n checks; next queued run takes over."
+        run: python Main.py --once
+
+      - name: Upload debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-${{ github.run_id }}
+          path: |
+            last_check.png
+            class_checker.log
+          if-no-files-found: ignore
+          retention-days: 3

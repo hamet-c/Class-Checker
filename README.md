@@ -6,7 +6,7 @@ A Python script that monitors CUNY Global Class Search for open seats in a speci
 
 The script uses Selenium to periodically scrape [CUNY Global Class Search](https://globalsearch.cuny.edu/) and checks the enrollment status of your target course. When a section is Open, you get notified.
 
-- **Cloud mode (recommended):** GitHub Actions checks every ~3 minutes on GitHub's servers and pings a Discord webhook when a seat opens. Your computer can be off.
+- **Cloud mode (recommended):** GitHub Actions checks ~12 times a day (every 2 hours) on GitHub's servers and pings a Discord webhook when a seat opens. Your computer can be off.
 - **Local mode:** loops every ~3 minutes with random jitter and shows a Windows MessageBox popup.
 - Logs each check result to `class_checker.log`
 - Uses the status image filename (`status_open.gif` / `status_closed.gif`) instead of the alt text, since CUNY's alt tags are unreliable
@@ -15,8 +15,8 @@ The script uses Selenium to periodically scrape [CUNY Global Class Search](https
 
 Two workflows:
 
-- **Class Checker** (`class-check.yml`): each run loops `python Main.py --once` every ~3 minutes for 5.5 hours. A twice-hourly cron queues the next loop (one running + one queued via the concurrency group), so when a loop ends the next starts immediately — near-continuous coverage even though GitHub's cron alone proved unreliable (~1 fire per 2 hours for this repo).
-- **Manual Check** (`manual-check.yml`): one instant check on demand, runs even while a loop is active. Use this to test.
+- **Class Checker** (`class-check.yml`): one quick check every 2 hours (~12/day), at :23 past even UTC hours. GitHub's cron is best-effort, so expect some jitter in exact timing.
+- **Manual Check** (`manual-check.yml`): one instant check on demand. Use this to test or to check right now.
 
 One-time setup:
 
@@ -29,8 +29,7 @@ Notes:
 
 - The repo must stay **public** — private repos cap free Actions minutes at 2,000/month, a few days of checking.
 - GitHub auto-disables scheduled workflows after 60 days with no repo activity — push any commit (or click "Enable" in the Actions tab) to keep it alive.
-- Check results appear in each run's log and step summary in the Actions tab.
-- A loop run aborts (red) after 5 consecutive failed checks; the queued run takes over, so transient CUNY outages self-heal.
+- Check results appear in each run's log and step summary in the Actions tab. A failed scrape shows as a red run and simply gets retried at the next scheduled check.
 
 ## Requirements (local mode)
 
