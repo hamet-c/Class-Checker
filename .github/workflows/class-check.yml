@@ -1,30 +1,28 @@
 name: Class Checker
 
+# GitHub's cron proved unreliable for this repo (~1 fire per 2 hours observed,
+# vs every-5-min requested). So each run is a long loop that checks every ~3
+# minutes for 5.5 hours, and the cron merely queues the next loop: the
+# concurrency group keeps one loop running and one queued, so when a loop
+# ends, the queued one starts immediately. Even a scheduler that drops most
+# fires keeps the chain unbroken.
+
 on:
   schedule:
-    # Every 5 minutes, offset to :01/:06/:11/... — the exact 5-minute marks
-    # (:00, :05, ...) are GitHub's most congested slots and scheduled runs
-    # get dropped under load. Still best-effort: expect ~5-20 min between runs.
-    - cron: "1-56/5 * * * *"
-  workflow_dispatch:
-    inputs:
-      test_notification:
-        description: "Also send a test Discord ping to verify the webhook"
-        type: boolean
-        default: false
+    - cron: "7,37 * * * *"
+  workflow_dispatch: {}
 
-# Never let two checks overlap; a late-dispatched run just queues.
 concurrency:
-  group: class-check
+  group: class-check-loop
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  check:
+  check-loop:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
 
@@ -36,19 +34,26 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Check for open seats
+      - name: Check loop (~5.5 hours, every ~3 min)
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          TEST_NOTIFY: ${{ inputs.test_notification }}
-        run: python Main.py --once
-
-      - name: Upload debug artifacts
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-${{ github.run_id }}
-          path: |
-            last_check.png
-            class_checker.log
-          if-no-files-found: ignore
-          retention-days: 3
+        run: |
+          end=$((SECONDS + 330*60))
+          fails=0
+          n=0
+          while [ $SECONDS -lt $end ]; do
+            n=$((n+1))
+            echo "=== check #$n at $(date -u +%H:%M:%S)Z ==="
+            if python Main.py --once; then
+              fails=0
+            else
+              fails=$((fails+1))
+              echo "check failed ($fails consecutive)"
+              if [ $fails -ge 5 ]; then
+                echo "5 consecutive failures — aborting so the run shows red"
+                exit 1
+              fi
+            fi
+            sleep $((160 + RANDOM % 60))
+          done
+          echo "Loop window finished after $n checks; next queued run takes over."

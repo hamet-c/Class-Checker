@@ -6,25 +6,31 @@ A Python script that monitors CUNY Global Class Search for open seats in a speci
 
 The script uses Selenium to periodically scrape [CUNY Global Class Search](https://globalsearch.cuny.edu/) and checks the enrollment status of your target course. When a section is Open, you get notified.
 
-- **Cloud mode (recommended):** GitHub Actions runs a check every ~5–15 minutes on GitHub's servers and pings a Discord webhook when a seat opens. Your computer can be off.
+- **Cloud mode (recommended):** GitHub Actions checks every ~3 minutes on GitHub's servers and pings a Discord webhook when a seat opens. Your computer can be off.
 - **Local mode:** loops every ~3 minutes with random jitter and shows a Windows MessageBox popup.
 - Logs each check result to `class_checker.log`
 - Uses the status image filename (`status_open.gif` / `status_closed.gif`) instead of the alt text, since CUNY's alt tags are unreliable
 
 ## Running in the Cloud (GitHub Actions + Discord)
 
-The workflow in `.github/workflows/class-check.yml` runs `python Main.py --once` on a schedule. One-time setup:
+Two workflows:
+
+- **Class Checker** (`class-check.yml`): each run loops `python Main.py --once` every ~3 minutes for 5.5 hours. A twice-hourly cron queues the next loop (one running + one queued via the concurrency group), so when a loop ends the next starts immediately — near-continuous coverage even though GitHub's cron alone proved unreliable (~1 fire per 2 hours for this repo).
+- **Manual Check** (`manual-check.yml`): one instant check on demand, runs even while a loop is active. Use this to test.
+
+One-time setup:
 
 1. **Create a Discord webhook:** in any Discord server you control → Server Settings → Integrations → Webhooks → New Webhook → pick the channel → Copy Webhook URL. (Keep the URL secret — anyone with it can post to your channel.)
 2. **Add it as a repo secret:** GitHub repo → Settings → Secrets and variables → Actions → New repository secret. Name: `DISCORD_WEBHOOK_URL`, value: the webhook URL.
-3. **Test it:** Actions tab → Class Checker → Run workflow → check "send a test Discord ping" → Run. You should get a test message in Discord plus a real check.
+3. **Test it:** Actions tab → Manual Check → Run workflow → check "send a test Discord ping" → Run. You should get a test message in Discord plus a real check.
 4. In Discord, set that channel's notification setting to **All Messages** so webhook pings buzz your phone (webhooks can't use @mentions reliably).
 
 Notes:
 
-- GitHub's cron is best-effort: checks land every ~5–15 minutes, not exactly every 5.
+- The repo must stay **public** — private repos cap free Actions minutes at 2,000/month, a few days of checking.
 - GitHub auto-disables scheduled workflows after 60 days with no repo activity — push any commit (or click "Enable" in the Actions tab) to keep it alive.
-- Each run's result also appears in the workflow run summary in the Actions tab.
+- Check results appear in each run's log and step summary in the Actions tab.
+- A loop run aborts (red) after 5 consecutive failed checks; the queued run takes over, so transient CUNY outages self-heal.
 
 ## Requirements (local mode)
 

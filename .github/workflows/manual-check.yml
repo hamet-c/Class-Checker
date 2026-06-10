@@ -1,0 +1,47 @@
+name: Manual Check
+
+# One instant check on demand. Separate from the loop workflow (and outside
+# its concurrency group) so it runs immediately even while a loop is going.
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_notification:
+        description: "Also send a test Discord ping to verify the webhook"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check for open seats
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TEST_NOTIFY: ${{ inputs.test_notification }}
+        run: python Main.py --once
+
+      - name: Upload debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-${{ github.run_id }}
+          path: |
+            last_check.png
+            class_checker.log
+          if-no-files-found: ignore
+          retention-days: 3
